@@ -16,18 +16,23 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializerProvider;
 import com.fasterxml.jackson.databind.module.SimpleModule;
 import com.fasterxml.jackson.databind.ser.std.StdSerializer;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Maps;
+import org.apache.log4j.Logger;
 import org.apache.thrift.TException;
 import org.apache.thrift.TSerializer;
 import org.apache.thrift.protocol.TSimpleJSONProtocol;
 import org.eclipse.sw360.datahandler.common.CommonUtils;
+import org.eclipse.sw360.datahandler.common.SW360Constants;
 import org.eclipse.sw360.datahandler.common.ThriftEnumUtils;
 import org.eclipse.sw360.datahandler.thrift.RequestStatus;
+import org.eclipse.sw360.datahandler.thrift.Source;
 import org.eclipse.sw360.datahandler.thrift.ThriftClients;
-import org.eclipse.sw360.datahandler.thrift.attachments.Attachment;
-import org.eclipse.sw360.datahandler.thrift.attachments.AttachmentContent;
-import org.eclipse.sw360.datahandler.thrift.attachments.AttachmentType;
-import org.eclipse.sw360.datahandler.thrift.attachments.CheckStatus;
+import org.eclipse.sw360.datahandler.thrift.ThriftUtils;
+import org.eclipse.sw360.datahandler.thrift.attachments.*;
+import org.eclipse.sw360.datahandler.thrift.components.Component;
+import org.eclipse.sw360.datahandler.thrift.components.Release;
+import org.eclipse.sw360.datahandler.thrift.projects.Project;
 import org.eclipse.sw360.datahandler.thrift.users.User;
 import org.eclipse.sw360.portal.common.AttachmentPortletUtils;
 import org.eclipse.sw360.portal.common.PortalConstants;
@@ -35,13 +40,14 @@ import org.eclipse.sw360.portal.common.UsedAsLiferayAction;
 import org.eclipse.sw360.portal.users.UserCacheHolder;
 
 import javax.portlet.*;
-
 import java.io.IOException;
 import java.util.*;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
+import static org.eclipse.sw360.datahandler.common.CommonUtils.nullToEmptyList;
 import static org.eclipse.sw360.datahandler.common.CommonUtils.nullToEmptySet;
-import static org.eclipse.sw360.portal.common.PortalConstants.ATTACHMENTS;
+import static org.eclipse.sw360.portal.common.PortalConstants.*;
 
 /**
  * Attachment portlet implementation
@@ -54,6 +60,7 @@ public abstract class AttachmentAwarePortlet extends Sw360Portlet {
     private static final Map<String, String> ATTACHMENT_TYPE_MAP = Maps.newHashMap();
     private static final Map<String, String> CHECK_STATUS_MAP = Maps.newHashMap();
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+    private static final Logger log = Logger.getLogger(AttachmentAwarePortlet.class);
 
     private static class AttachmentSerializer extends StdSerializer<Attachment> {
         private static final TSerializer JSON_SERIALIZER = new TSerializer(new TSimpleJSONProtocol.Factory());
@@ -106,8 +113,67 @@ public abstract class AttachmentAwarePortlet extends Sw360Portlet {
     }
 
 
-    public static void setAttachmentsInRequest(PortletRequest request, Set<Attachment> attachments) {
-        request.setAttribute(ATTACHMENTS, CommonUtils.nullToEmptySet(attachments));
+    private void setAttachmentsInRequest(PortletRequest request, Set<Attachment> attachments, Source owner) {
+        Set<Attachment> atts = CommonUtils.nullToEmptySet(attachments);
+        request.setAttribute(ATTACHMENTS, atts);
+        if (owner == null) {
+            setEmptyUsages(request);
+            return;
+        }
+        AttachmentService.Iface client = thriftClients.makeAttachmentClient();
+
+        Set<String> attachmentContentIds = atts.stream().map(Attachment::getAttachmentContentId).collect(Collectors.toSet());
+        try {
+            List<AttachmentUsage> attachmentUsages = client.getAttachmentsUsages(owner, attachmentContentIds, null);
+            List<String> projectIds = attachmentUsages.stream()
+                    .map(AttachmentUsage::getUsedBy)
+                    .map(Source::getProjectId)
+                    .distinct().collect(Collectors.toList());
+            List<Project> usingProjectsList = thriftClients.makeProjectClient().getProjectsById(projectIds, UserCacheHolder.getUserFromRequest(request));
+            Map<String, Project> usingProjects = ThriftUtils.getIdMap(usingProjectsList);
+
+            Map<String, List<AttachmentUsage>> attachmentUsagesByContentId = attachmentUsages.stream().collect(Collectors.groupingBy(AttachmentUsage::getAttachmentContentId));
+            Map<String, List<Project>> usingProjectsByContentId = Maps.transformValues(
+                    attachmentUsagesByContentId,
+                    attUsages -> distinctProjectIdsFromAttachmentUsages(attUsages)
+                            .map(usingProjects::get)
+                            .filter(Objects::nonNull)
+                            .collect(Collectors.toList()));
+            Map<String, Long> restrictedProjectsCountsByContentId = attachmentUsagesByContentId.entrySet().stream()
+                    .collect(Collectors.toMap(Map.Entry::getKey,
+                            entry -> distinctProjectIdsFromAttachmentUsages(entry.getValue())
+                                    .count() - usingProjectsByContentId.get(entry.getKey()).size()
+                    ));
+            request.setAttribute(ATTACHMENT_USAGES, usingProjectsByContentId);
+            request.setAttribute(ATTACHMENT_USAGES_RESTRICTED_COUNTS, restrictedProjectsCountsByContentId);
+        } catch (TException e) {
+            log.error("Cannot load attachment usages", e);
+            setEmptyUsages(request);
+        }
+    }
+
+    private void setEmptyUsages(PortletRequest request) {
+        request.setAttribute(ATTACHMENT_USAGES, Collections.emptyMap());
+        request.setAttribute(ATTACHMENT_USAGES_RESTRICTED_COUNTS, Collections.emptyMap());
+    }
+
+    private Stream<String> distinctProjectIdsFromAttachmentUsages (List<AttachmentUsage> usages){
+        return nullToEmptyList(usages).stream()
+                .map(AttachmentUsage::getUsedBy)
+                .map(Source::getProjectId)
+                .distinct();
+    }
+
+    protected void setAttachmentsInRequest(PortletRequest request, Component component) {
+        setAttachmentsInRequest(request, component.getAttachments(), component.getId() == null ? null : Source.componentId(component.getId()));
+    }
+
+    protected void setAttachmentsInRequest(PortletRequest request, Release release) {
+        setAttachmentsInRequest(request, release.getAttachments(), release.getId() == null ? null : Source.releaseId(release.getId()));
+    }
+
+    protected void setAttachmentsInRequest(PortletRequest request, Project project) {
+        setAttachmentsInRequest(request, project.getAttachments(), project.getId() == null ? null : Source.projectId(project.getId()));
     }
 
     private String getDocumentType(ResourceRequest request) {
@@ -164,12 +230,42 @@ public abstract class AttachmentAwarePortlet extends Sw360Portlet {
         // this is the raw attachment data
         List<Attachment> attachments = getAttachments(documentId, documentType, user).stream()
                 .sorted(Comparator.comparing(Attachment::getFilename)).collect(Collectors.toList());
+        Map<String, Integer> attachmentUsageCounts = Collections.emptyMap();
+        try {
+            Set<String> contentIds = attachments.stream().map(Attachment::getAttachmentContentId).collect(Collectors.toSet());
+            Map<Map<Source, String>, Integer> usageCountsBySourceAndContentId = thriftClients.makeAttachmentClient().getAttachmentUsageCount(
+                    ImmutableMap.of(createSource(documentId, documentType), contentIds), null);
+            attachmentUsageCounts = usageCountsBySourceAndContentId.entrySet().stream()
+                    .collect(Collectors.toMap(AttachmentAwarePortlet::getValueFromSingleEntryMapKey, Map.Entry::getValue));
+        } catch (TException e) {
+            log.error("Could not get attachment counts", e);
+        }
 
         Map<String, Object> data = Maps.newHashMap();
         data.put("data", attachments);
         data.put("attachmentTypes", ATTACHMENT_TYPE_MAP);
         data.put("checkStatuses", CHECK_STATUS_MAP);
+        data.put("usageCounts", attachmentUsageCounts);
         writeJSON(request, response, OBJECT_MAPPER.writeValueAsString(data));
+    }
+
+    private static String getValueFromSingleEntryMapKey(Map.Entry<Map<Source, String>, Integer> entry){
+        if (entry.getKey().size() != 1) {
+            throw new IllegalArgumentException("key is not a single entry map");
+        }
+        return entry.getKey().values().stream().findFirst().get();
+    }
+
+    private Source createSource(String documentId, String documentType) {
+        if (SW360Constants.TYPE_COMPONENT.equals(documentType)){
+            return Source.componentId(documentId);
+        } else if (SW360Constants.TYPE_PROJECT.equals(documentType)){
+            return Source.projectId(documentId);
+        } else if (SW360Constants.TYPE_RELEASE.equals(documentType)){
+            return Source.releaseId(documentId);
+        } else {
+            throw new IllegalArgumentException("Illegal document type: " + documentType);
+        }
     }
 
     private void serveNewAttachmentId(ResourceRequest request, ResourceResponse response) throws IOException {

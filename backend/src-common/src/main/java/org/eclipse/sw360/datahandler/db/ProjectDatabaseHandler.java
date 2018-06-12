@@ -91,6 +91,7 @@ public class ProjectDatabaseHandler extends AttachmentAwareDatabaseHandler {
 
     @VisibleForTesting
     public ProjectDatabaseHandler(Supplier<HttpClient> httpClient, String dbName, String attachmentDbName, ProjectModerator moderator, ComponentDatabaseHandler componentDatabaseHandler) throws MalformedURLException {
+        super(httpClient, dbName);
         DatabaseConnector db = new DatabaseConnector(httpClient, dbName);
 
         // Create the repositories
@@ -184,7 +185,7 @@ public class ProjectDatabaseHandler extends AttachmentAwareDatabaseHandler {
             return RequestStatus.FAILED_SANITY_CHECK;
         } else if (makePermission(actual, user).isActionAllowed(RequestedAction.WRITE)) {
             copyImmutableFields(project,actual);
-            project.setAttachments( getAllAttachmentsToKeep(actual.getAttachments(), project.getAttachments()) );
+            project.setAttachments( getAllAttachmentsToKeep(toSource(actual), actual.getAttachments(), project.getAttachments()) );
             repository.update(project);
 
             //clean up attachments in database

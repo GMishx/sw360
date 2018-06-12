@@ -95,6 +95,7 @@ public class ComponentDatabaseHandler extends AttachmentAwareDatabaseHandler {
     private final MailUtil mailUtil = new MailUtil();
 
     public ComponentDatabaseHandler(Supplier<HttpClient> httpClient, String dbName, String attachmentDbName, ComponentModerator moderator, ReleaseModerator releaseModerator) throws MalformedURLException {
+        super(httpClient, dbName);
         DatabaseConnector db = new DatabaseConnector(httpClient, dbName);
 
         // Create the repositories
@@ -406,7 +407,7 @@ public class ComponentDatabaseHandler extends AttachmentAwareDatabaseHandler {
             }
 
             copyFields(actual, component, ThriftUtils.IMMUTABLE_OF_COMPONENT);
-            component.setAttachments(getAllAttachmentsToKeep(actual.getAttachments(), component.getAttachments()));
+            component.setAttachments(getAllAttachmentsToKeep(toSource(actual), actual.getAttachments(), component.getAttachments()));
             updateComponentInternal(component, actual, user);
 
         } else {
@@ -625,7 +626,7 @@ public class ComponentDatabaseHandler extends AttachmentAwareDatabaseHandler {
             if (hasChangesInEccFields) {
                 autosetEccUpdaterInfo(release, user);
             }
-            release.setAttachments( getAllAttachmentsToKeep(actual.getAttachments(), release.getAttachments()) );
+            release.setAttachments( getAllAttachmentsToKeep(toSource(actual), actual.getAttachments(), release.getAttachments()) );
             releaseRepository.update(release);
             updateReleaseDependentFieldsForComponentId(release.getComponentId());
             //clean up attachments in database

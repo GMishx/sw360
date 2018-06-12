@@ -18,7 +18,7 @@ import com.google.common.collect.Maps;
 import org.apache.log4j.Logger;
 import org.apache.thrift.TException;
 import org.eclipse.sw360.attachments.db.AttachmentRepository;
-import org.eclipse.sw360.attachments.db.AttachmentUsageRepository;
+import org.eclipse.sw360.datahandler.db.AttachmentUsageRepository;
 import org.eclipse.sw360.datahandler.common.CommonUtils;
 import org.eclipse.sw360.datahandler.common.DatabaseSettings;
 import org.eclipse.sw360.datahandler.couchdb.AttachmentConnector;
@@ -205,7 +205,7 @@ public class AttachmentHandler implements AttachmentService.Iface {
         assertIds(attachmentUsages, AttachmentUsage::isSetId);
 
         List<DocumentOperationResult> results = attachmentUsageRepository.executeBulk(
-                attachmentUsages.stream().map(attachmentUsage -> BulkDeleteDocument.of(attachmentUsage)).collect(Collectors.toList()));
+                attachmentUsages.stream().map(BulkDeleteDocument::of).collect(Collectors.toList()));
         if (!results.isEmpty()) {
             throw new SW360Exception("Some of the usage documents could not be deleted: " + results);
         }
@@ -246,6 +246,22 @@ public class AttachmentHandler implements AttachmentService.Iface {
                     filter.getSetField().toString());
         } else {
             return attachmentUsageRepository.getUsageForAttachment(owner.getFieldValue().toString(), attachmentContentId);
+        }
+    }
+
+    @Override
+    public List<AttachmentUsage> getAttachmentsUsages(Source owner, Set<String> attachmentContentIds, UsageData filter) throws TException {
+        assertNotNull(owner);
+        assertTrue(owner.isSet());
+        assertNotNull(attachmentContentIds);
+        assertNotEmpty(attachmentContentIds);
+
+        Map<String, Set<String>> attContentIdsByOwnerId = ImmutableMap.of(owner.getFieldValue().toString(), attachmentContentIds);
+
+        if (filter != null && filter.isSet()) {
+            return attachmentUsageRepository.getUsageForAttachments(attContentIdsByOwnerId, filter.getSetField().toString());
+        } else {
+            return attachmentUsageRepository.getUsageForAttachments(attContentIdsByOwnerId, null);
         }
     }
 
