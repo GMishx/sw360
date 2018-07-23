@@ -105,6 +105,7 @@
                     {"sTitle": "Release Mainline state"},
                     {"sTitle": "Actions"}
                 ],
+                "order": [[1, 'asc'], [2, 'desc']],
                 "autoWidth": false
             });
         }
